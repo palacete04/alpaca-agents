@@ -26,9 +26,10 @@ def run_monitor():
         api = get_alpaca_client()
         cuenta = api.get_account()
         
-        balance = float(cuenta.cash)
-        equity = float(cuenta.equity)
-        ganancia_dia = float(cuenta.equity) - float(cuenta.last_equity)
+        balance    = float(cuenta.cash)
+        equity     = float(cuenta.equity)
+        last_equity = float(cuenta.last_equity)
+        ganancia_dia = equity - last_equity
         
         # Posiciones abiertas
         posiciones = []
@@ -38,23 +39,22 @@ def run_monitor():
                 pos = api.get_position(sym)
                 qty = int(float(pos.qty))
                 precio_entrada = float(pos.avg_entry_price)
-                precio_actual = float(pos.current_price)
-                pnl = float(pos.unrealized_pl)
+                precio_actual  = float(pos.current_price)
+                pnl     = float(pos.unrealized_pl)
                 pnl_pct = float(pos.unrealized_plpc) * 100
                 posiciones.append({
                     "symbol": sym,
                     "qty": qty,
                     "entrada": precio_entrada,
                     "actual": precio_actual,
-                    "pnl": pnl,
-                    "pnl_pct": pnl_pct
+                    "pnl": round(pnl, 2),
+                    "pnl_pct": round(pnl_pct, 2)
                 })
             except:
                 pass
         
-        # Ultimas 5 operaciones
-        actividades = api.get_activities(activity_types='FILL')
-        ultimas = list(actividades)[:5]
+        # Ultimas ordenes
+        ordenes = api.list_orders(status='all', limit=5)
         
         # Armar reporte
         report = f"[MONITOR ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
@@ -65,22 +65,23 @@ def run_monitor():
         if posiciones:
             report += "Posiciones abiertas:\n"
             for p in posiciones:
-                report += f"  {p['symbol']}: {p['qty']} acc @ ${p['entrada']:.2f} → ${p['actual']:.2f} ({p['pnl_pct']:+.2f}%)\n"
+                report += f"  {p['symbol']}: {p['qty']} acc @ ${p['entrada']:.2f} -> ${p['actual']:.2f} ({p['pnl_pct']:+.2f}%)\n"
         else:
             report += "Sin posiciones abiertas\n"
         
-        if ultimas:
-            report += "\nUltimas operaciones:\n"
-            for act in ultimas:
-                side = "COMPRA" if act.side == "buy" else "VENTA"
-                report += f"  {side} {act.qty} {act.symbol} @ ${float(act.price):.2f}\n"
+        if ordenes:
+            report += "\nUltimas ordenes:\n"
+            for o in ordenes:
+                side = "COMPRA" if o.side == "buy" else "VENTA"
+                precio = float(o.filled_avg_price) if o.filled_avg_price else 0
+                report += f"  {side} {o.qty} {o.symbol} @ ${precio:.2f} ({o.status})\n"
         
         send_telegram(report)
         
         return {
             "balance": balance,
             "equity": equity,
-            "ganancia_dia": ganancia_dia,
+            "ganancia_dia": round(ganancia_dia, 2),
             "posiciones": posiciones,
             "status": "ok"
         }
