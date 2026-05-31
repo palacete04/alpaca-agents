@@ -18,6 +18,9 @@ def send_telegram(message):
         print(f"Error Telegram: {e}")
 
 def get_alpaca_client():
+    print(f"API_KEY: {ALPACA_API_KEY[:8] if ALPACA_API_KEY else 'NONE'}")
+    print(f"SECRET: {ALPACA_SECRET_KEY[:8] if ALPACA_SECRET_KEY else 'NONE'}")
+    print(f"BASE_URL: {ALPACA_BASE_URL}")
     return tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
 
 def run_monitor():
