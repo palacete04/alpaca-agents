@@ -5,8 +5,8 @@ import alpaca_trade_api as tradeapi
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6518133529")
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
+ALPACA_API_KEY = os.environ.get("API_KEY")
+ALPACA_SECRET_KEY = os.environ.get("API_SECRET")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 def send_telegram(message):
