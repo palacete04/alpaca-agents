@@ -1,13 +1,10 @@
 import requests
 import os
 from datetime import datetime
-import alpaca_trade_api as tradeapi
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6518133529")
-ALPACA_API_KEY = os.environ.get("API_KEY")
-ALPACA_SECRET_KEY = os.environ.get("API_SECRET")
-ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://trading-webhook-zhra.onrender.com")
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -17,79 +14,57 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error Telegram: {e}")
 
-def get_alpaca_client():
-    print(f"API_KEY: {ALPACA_API_KEY[:8] if ALPACA_API_KEY else 'NONE'}")
-    print(f"SECRET: {ALPACA_SECRET_KEY[:8] if ALPACA_SECRET_KEY else 'NONE'}")
-    print(f"BASE_URL: {ALPACA_BASE_URL}")
-    return tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
+def verify_alpaca_params(params):
+    issues = []
+    sl  = params.get('stop_loss_pct', 1.0)
+    tp  = params.get('take_profit_pct', 2.0)
+    ts  = params.get('trailing_stop_pct', 0.5)
+    pct = params.get('pct_capital', 20)
+    if sl > 3:
+        issues.append(f"Stop Loss muy alto ({sl}%) - maximo 3%")
+    if tp < sl * 2:
+        issues.append(f"Take Profit ({tp}%) debe ser al menos el doble del SL ({sl}%)")
+    if ts > sl:
+        issues.append(f"Trailing Stop ({ts}%) no puede ser mayor al SL ({sl}%)")
+    if pct > 30:
+        issues.append(f"Capital por operacion muy alto ({pct}%) - maximo 30%")
+    if pct < 5:
+        issues.append(f"Capital por operacion muy bajo ({pct}%) - minimo 5%")
+    return len(issues) == 0, issues
 
-def run_monitor():
-    """Agente Monitor: estado general del bot de Alpaca"""
+def verify_webhook(webhook_url):
     try:
-        api = get_alpaca_client()
-        cuenta = api.get_account()
-        
-        balance    = float(cuenta.cash)
-        equity     = float(cuenta.equity)
-        last_equity = float(cuenta.last_equity)
-        ganancia_dia = equity - last_equity
-        
-        # Posiciones abiertas
-        posiciones = []
-        simbolos = ["SPY", "QQQ", "IWM"]
-        for sym in simbolos:
-            try:
-                pos = api.get_position(sym)
-                qty = int(float(pos.qty))
-                precio_entrada = float(pos.avg_entry_price)
-                precio_actual  = float(pos.current_price)
-                pnl     = float(pos.unrealized_pl)
-                pnl_pct = float(pos.unrealized_plpc) * 100
-                posiciones.append({
-                    "symbol": sym,
-                    "qty": qty,
-                    "entrada": precio_entrada,
-                    "actual": precio_actual,
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2)
-                })
-            except:
-                pass
-        
-        # Ultimas ordenes
-        ordenes = api.list_orders(status='all', limit=5)
-        
-        # Armar reporte
-        report = f"[MONITOR ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
-        report += f"Balance: ${balance:,.2f}\n"
-        report += f"Equity: ${equity:,.2f}\n"
-        report += f"Ganancia hoy: ${ganancia_dia:+.2f}\n\n"
-        
-        if posiciones:
-            report += "Posiciones abiertas:\n"
-            for p in posiciones:
-                report += f"  {p['symbol']}: {p['qty']} acc @ ${p['entrada']:.2f} -> ${p['actual']:.2f} ({p['pnl_pct']:+.2f}%)\n"
-        else:
-            report += "Sin posiciones abiertas\n"
-        
-        if ordenes:
-            report += "\nUltimas ordenes:\n"
-            for o in ordenes:
-                side = "COMPRA" if o.side == "buy" else "VENTA"
-                precio = float(o.filled_avg_price) if o.filled_avg_price else 0
-                report += f"  {side} {o.qty} {o.symbol} @ ${precio:.2f} ({o.status})\n"
-        
-        send_telegram(report)
-        
-        return {
-            "balance": balance,
-            "equity": equity,
-            "ganancia_dia": round(ganancia_dia, 2),
-            "posiciones": posiciones,
-            "status": "ok"
-        }
-        
+        response = requests.get(webhook_url, timeout=10)
+        if response.status_code == 200:
+            return True, response.json()
+        return False, f"Status: {response.status_code}"
     except Exception as e:
-        error_msg = f"[MONITOR ALPACA] Error: {str(e)}"
-        send_telegram(error_msg)
-        return {"error": str(e)}
+        return False, str(e)
+
+def run_verification_alpaca(params):
+    params_ok, issues = verify_alpaca_params(params)
+    webhook_ok, webhook_data = verify_webhook(WEBHOOK_URL)
+
+    report = f"[VERIFICADOR ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+    report += f"Parametros: {'OK' if params_ok else 'PROBLEMAS'}\n"
+    if issues:
+        for issue in issues:
+            report += f"  - {issue}\n"
+    else:
+        report += f"  SL: {params.get('stop_loss_pct')}% | TP: {params.get('take_profit_pct')}% | Capital: {params.get('pct_capital')}%\n"
+
+    report += f"\nWebhook: {'OK' if webhook_ok else 'ERROR'}\n"
+    if webhook_ok and isinstance(webhook_data, dict):
+        report += f"  Balance: ${webhook_data.get('balance', 0):,.2f}\n"
+        posiciones = webhook_data.get('posiciones', {})
+        report += f"  Posiciones: {posiciones if posiciones else 'Ninguna'}\n"
+    else:
+        report += f"  Error: {webhook_data}\n"
+
+    send_telegram(report)
+    return {
+        "params_ok": params_ok,
+        "issues": issues,
+        "webhook_ok": webhook_ok,
+        "webhook_data": webhook_data if isinstance(webhook_data, dict) else str(webhook_data)
+    }
