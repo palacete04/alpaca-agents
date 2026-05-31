@@ -1,13 +1,9 @@
 import requests
 import os
 from datetime import datetime, timedelta
-import alpaca_trade_api as tradeapi
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6518133529")
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -17,105 +13,100 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error Telegram: {e}")
 
-def get_alpaca_client():
-    return tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
-
 def get_market_data(symbol, days=30):
-    """Descarga datos historicos de un simbolo desde Alpaca"""
+    """Descarga datos historicos desde Yahoo Finance"""
     try:
-        api = get_alpaca_client()
         end = datetime.now()
         start = end - timedelta(days=days)
-        barras = api.get_bars(
-            symbol,
-            tradeapi.TimeFrame.Day,
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d")
-        ).df
-        return barras
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        params = {
+            "period1": int(start.timestamp()),
+            "period2": int(end.timestamp()),
+            "interval": "1d",
+            "includePrePost": False
+        }
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, params=params, headers=headers, timeout=15)
+        data = response.json()
+        result = data["chart"]["result"][0]
+        closes  = result["indicators"]["quote"][0]["close"]
+        volumes = result["indicators"]["quote"][0]["volume"]
+        closes  = [c for c in closes if c is not None]
+        volumes = [v for v in volumes if v is not None]
+        return closes, volumes
     except Exception as e:
         print(f"Error obteniendo datos de {symbol}: {e}")
+        return [], []
+
+def calcular_indicadores(closes, volumes):
+    """Calcula EMA50, EMA200, RSI y tendencia"""
+    if len(closes) < 10:
         return None
 
-def calcular_indicadores(df):
-    """Calcula EMA50, EMA200, RSI y tendencia"""
-    if df is None or len(df) < 10:
-        return None
-    
-    df = df.copy()
-    df['ema50']  = df['close'].ewm(span=50).mean()
-    df['ema200'] = df['close'].ewm(span=200).mean()
-    
+    # EMA simple
+    def ema(data, span):
+        k = 2 / (span + 1)
+        result = [data[0]]
+        for price in data[1:]:
+            result.append(price * k + result[-1] * (1 - k))
+        return result
+
+    ema50  = ema(closes, 50)[-1] if len(closes) >= 50 else ema(closes, len(closes))[-1]
+    ema200 = ema(closes, 200)[-1] if len(closes) >= 200 else ema(closes, len(closes))[-1]
+
     # RSI
-    delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
-    
-    # Retorno ultimos 5 dias
-    df['retorno_5d'] = df['close'].pct_change(5) * 100
-    
-    ultimo = df.iloc[-1]
-    tendencia = "ALCISTA" if ultimo['ema50'] > ultimo['ema200'] else "BAJISTA"
-    
+    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    gains  = [d if d > 0 else 0 for d in deltas[-14:]]
+    losses = [-d if d < 0 else 0 for d in deltas[-14:]]
+    avg_gain = sum(gains) / 14 if gains else 0
+    avg_loss = sum(losses) / 14 if losses else 1
+    rs  = avg_gain / avg_loss if avg_loss > 0 else 0
+    rsi = 100 - (100 / (1 + rs))
+
+    precio = closes[-1]
+    retorno_5d = ((closes[-1] - closes[-6]) / closes[-6] * 100) if len(closes) >= 6 else 0
+    tendencia = "ALCISTA" if ema50 > ema200 else "BAJISTA"
+
     return {
-        "precio": round(ultimo['close'], 2),
-        "ema50": round(ultimo['ema50'], 2),
-        "ema200": round(ultimo['ema200'], 2),
-        "rsi": round(ultimo['rsi'], 1),
+        "precio": round(precio, 2),
+        "ema50": round(ema50, 2),
+        "ema200": round(ema200, 2),
+        "rsi": round(rsi, 1),
         "tendencia": tendencia,
-        "retorno_5d": round(ultimo['retorno_5d'], 2),
-        "volumen": int(ultimo['volume'])
+        "retorno_5d": round(retorno_5d, 2),
+        "volumen_promedio": int(sum(volumes[-5:]) / 5) if volumes else 0
     }
 
-def sugerir_estrategias(indicadores):
-    """Sugiere estrategias basadas en los indicadores actuales"""
+def sugerir_estrategias(ind):
     sugerencias = []
-    
-    if not indicadores:
-        return sugerencias
-    
-    ind = indicadores
-    
-    # MA Crossover
     if ind['tendencia'] == "ALCISTA":
-        sugerencias.append("MA Crossover 50/200: FAVORABLE (tendencia alcista activa)")
+        sugerencias.append("MA Crossover 50/200: FAVORABLE (tendencia alcista)")
     else:
         sugerencias.append("MA Crossover 50/200: PRECAUCION (tendencia bajista)")
-    
-    # RSI Mean Reversion
     if ind['rsi'] < 35:
-        sugerencias.append(f"Mean Reversion RSI: OPORTUNIDAD DE COMPRA (RSI={ind['rsi']})")
+        sugerencias.append(f"Mean Reversion RSI: OPORTUNIDAD COMPRA (RSI={ind['rsi']})")
     elif ind['rsi'] > 70:
         sugerencias.append(f"Mean Reversion RSI: ZONA DE VENTA (RSI={ind['rsi']})")
     else:
         sugerencias.append(f"Mean Reversion RSI: NEUTRAL (RSI={ind['rsi']})")
-    
-    # Momentum
     if ind['retorno_5d'] > 2:
         sugerencias.append(f"Momentum: POSITIVO (+{ind['retorno_5d']}% en 5 dias)")
     elif ind['retorno_5d'] < -2:
         sugerencias.append(f"Momentum: NEGATIVO ({ind['retorno_5d']}% en 5 dias)")
-    
     return sugerencias
 
 def run_analysis_alpaca():
-    """Ejecuta analisis completo de SPY, QQQ e IWM"""
     simbolos = ["SPY", "QQQ", "IWM"]
     resultados = {}
-    
     report = f"[ANALISTA ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
-    
+
     for sym in simbolos:
-        df = get_market_data(sym)
-        ind = calcular_indicadores(df)
-        
+        closes, volumes = get_market_data(sym)
+        ind = calcular_indicadores(closes, volumes)
         if ind:
             sugerencias = sugerir_estrategias(ind)
             resultados[sym] = {"indicadores": ind, "sugerencias": sugerencias}
-            
-            report += f"{sym}: ${ind['precio']} | Tendencia: {ind['tendencia']}\n"
+            report += f"{sym}: ${ind['precio']} | {ind['tendencia']}\n"
             report += f"  EMA50: ${ind['ema50']} | EMA200: ${ind['ema200']}\n"
             report += f"  RSI: {ind['rsi']} | Retorno 5d: {ind['retorno_5d']}%\n"
             report += f"  Estrategias:\n"
@@ -124,6 +115,6 @@ def run_analysis_alpaca():
             report += "\n"
         else:
             report += f"{sym}: Error al obtener datos\n\n"
-    
+
     send_telegram(report)
     return resultados
