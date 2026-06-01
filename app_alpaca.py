@@ -1,10 +1,15 @@
 from flask import Flask, request, jsonify
 import os
 from datetime import datetime
-from alpaca_monitor_agent import run_monitor
-from alpaca_analyst_agent import run_analysis_alpaca
-from alpaca_optimizer_agent import run_optimization_alpaca
-from alpaca_verifier_agent import run_verification_alpaca
+try:
+    from alpaca_monitor_agent import run_monitor
+    from alpaca_analyst_agent import run_analysis_alpaca
+    from alpaca_optimizer_agent import run_optimization_alpaca
+    from alpaca_verifier_agent import run_verification_alpaca
+    print("Imports exitosos")
+except Exception as e:
+    print(f"Error de import: {e}")
+    raise
 
 app = Flask(__name__)
 
