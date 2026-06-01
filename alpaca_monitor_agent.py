@@ -18,7 +18,12 @@ def run_monitor():
     """Agente Monitor: obtiene estado del bot via webhook"""
     try:
         # Obtener estado general del webhook
-        response = requests.get(f"{WEBHOOK_URL}/", timeout=15)
+        import time
+for intento in range(3):
+    response = requests.get(f"{WEBHOOK_URL}/", timeout=15)
+    if response.status_code != 429:
+        break
+    time.sleep(5)
         if response.status_code != 200:
             raise Exception(f"Webhook error: {response.status_code}")
         
