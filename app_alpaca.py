@@ -1,30 +1,20 @@
 from flask import Flask, request, jsonify
-import os
-import threading
-import time
-from datetime import datetime
-from alpaca_monitor_agent import run_monitor
-from alpaca_analyst_agent import run_analysis_alpaca
-from alpaca_optimizer_agent import run_optimization_alpaca
-from alpaca_verifier_agent import run_verification_alpaca
 import requests
+import os
+from datetime import datetime
+from analyst_agent import run_analysis
+from developer_agent import apply_adjustment, get_current_params
+from optimizer_agent import run_optimization
+from verifier_agent import verify_and_apply, verify_all_params
 
 app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-5246245037")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6518133529")
 
-ALPACA_PARAMS = {
-    "stop_loss_pct": float(os.environ.get("STOP_LOSS_PCT", "1.0")),
-    "take_profit_pct": float(os.environ.get("TAKE_PROFIT_PCT", "2.0")),
-    "trailing_stop_pct": float(os.environ.get("TRAILING_STOP_PCT", "0.5")),
-    "pct_capital": float(os.environ.get("PCT_CAPITAL", "20")),
-    "simbolos": ["SPY", "QQQ", "IWM"],
-    "timeframe": "5min",
-    "estrategia": "MA Crossover 50/200"
-}
-
-alpaca_trades = []
+trades = []
+last_heartbeat = None
+HEARTBEAT_TIMEOUT = 45 * 60  # 45 minutos en segundos
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -34,103 +24,184 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error Telegram: {e}")
 
-def es_dia_habil():
-    """Verifica si hoy es dia de mercado (lunes a viernes)"""
-    return datetime.utcnow().weekday() < 5
+def analyze_trades(trades_data):
+    """Agente Monitor con reglas simples - sin costo"""
+    if len(trades_data) < 3:
+        return None
 
-def hora_utc():
-    now = datetime.utcnow()
-    return now.hour, now.minute
+    total = len(trades_data)
+    wins = sum(1 for t in trades_data if t['profit'] > 0)
+    losses = total - wins
+    win_rate = (wins / total * 100)
+    total_profit = sum(t['profit'] for t in trades_data)
 
-def scheduler():
-    """Scheduler que manda reportes automaticos en horarios clave"""
-    print("Scheduler iniciado")
-    while True:
-        try:
-            if es_dia_habil():
-                h, m = hora_utc()
+    # Estadísticas por estrategia
+    by_strategy = {}
+    for t in trades_data:
+        s = t['strategy']
+        if s not in by_strategy:
+            by_strategy[s] = {"wins": 0, "losses": 0, "profit": 0, "consecutive_losses": 0}
+        if t['profit'] > 0:
+            by_strategy[s]['wins'] += 1
+            by_strategy[s]['consecutive_losses'] = 0
+        else:
+            by_strategy[s]['losses'] += 1
+            by_strategy[s]['consecutive_losses'] += 1
+        by_strategy[s]['profit'] += t['profit']
 
-                # 13:30 UTC = 10:30 Argentina = Apertura mercado
-                if h == 13 and m == 30:
-                    send_telegram("🔔 Mercado abriendo — SPY, QQQ, IWM")
-                    run_analysis_alpaca()
-                    run_monitor()
-                    time.sleep(70)
+    alerts = []
 
-                # 16:00 UTC = 13:00 Argentina = Reporte mediodia
-                elif h == 16 and m == 0:
-                    run_monitor()
-                    time.sleep(70)
+    # Regla 1: Win rate global menor al 40%
+    if total >= 5 and win_rate < 40:
+        alerts.append(f"[ALERTA] Win rate bajo: {win_rate:.0f}% ({wins}/{total})")
 
-                # 20:00 UTC = 17:00 Argentina = Cierre mercado
-                elif h == 20 and m == 0:
-                    send_telegram("🔔 Mercado cerrando — Reporte del dia:")
-                    run_monitor()
-                    time.sleep(70)
+    # Regla 2: P&L total negativo mayor a $10
+    if total_profit < -10:
+        alerts.append(f"[ALERTA] Perdida acumulada: ${total_profit:.2f}")
 
-                else:
-                    time.sleep(30)
-            else:
-                time.sleep(300)
+    # Regla 3: Estrategia con 3 perdidas consecutivas
+    for strategy, stats in by_strategy.items():
+        if stats['consecutive_losses'] >= 3:
+            alerts.append(f"[ALERTA] {strategy}: 3 perdidas consecutivas")
 
-        except Exception as e:
-            print(f"Error scheduler: {e}")
-            time.sleep(60)
+    # Regla 4: Estrategia con win rate menor al 30%
+    for strategy, stats in by_strategy.items():
+        total_s = stats['wins'] + stats['losses']
+        if total_s >= 4:
+            wr_s = stats['wins'] / total_s * 100
+            if wr_s < 30:
+                alerts.append(f"[ALERTA] {strategy}: win rate muy bajo ({wr_s:.0f}%)")
 
-# Iniciar scheduler en background
-scheduler_thread = threading.Thread(target=scheduler, daemon=True)
-scheduler_thread.start()
+    # Reporte cada 5 operaciones
+    if total % 5 == 0:
+        report = f"[REPORTE] {total} operaciones\n"
+        report += f"Win rate: {win_rate:.0f}% | P&L: ${total_profit:.2f}\n"
+        for s, st in by_strategy.items():
+            report += f"{s}: {st['wins']}G/{st['losses']}P (${st['profit']:.2f})\n"
+        send_telegram(report)
+
+    return alerts
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({
-        "status": "Alpaca Multi-Agente activo",
-        "agentes": ["/monitor", "/analyze", "/params", "/optimize", "/verify"],
-        "simbolos": ["SPY", "QQQ", "IWM"],
-        "scheduler": "activo — reportes a las 10:30, 13:00 y 17:00 Argentina"
-    })
+    total = len(trades)
+    wins = sum(1 for t in trades if t['profit'] > 0)
+    total_profit = sum(t['profit'] for t in trades)
+    return {"status": "BreakoutEA Monitor activo", "total": total, "wins": wins, "losses": total-wins, "pnl": round(total_profit, 2)}
 
-@app.route("/monitor", methods=["GET"])
-def monitor():
-    result = run_monitor()
-    return jsonify(result)
-
-@app.route("/analyze", methods=["GET"])
-def analyze():
-    result = run_analysis_alpaca()
-    return jsonify(result)
-
-@app.route("/params", methods=["GET"])
-def params():
-    return jsonify(ALPACA_PARAMS)
-
-@app.route("/optimize", methods=["GET"])
-def optimize():
-    if len(alpaca_trades) < 5:
-        return jsonify({"message": "Necesitas al menos 5 operaciones para optimizar"})
-    result = run_optimization_alpaca(alpaca_trades, ALPACA_PARAMS)
-    return jsonify(result)
-
-@app.route("/verify", methods=["GET"])
-def verify():
-    result = run_verification_alpaca(ALPACA_PARAMS)
-    return jsonify(result)
+@app.route("/notify", methods=["POST"])
+def notify():
+    data = request.get_json()
+    if not data or "message" not in data:
+        return {"error": "Falta message"}, 400
+    send_telegram(data["message"])
+    return {"status": "ok"}
 
 @app.route("/trade", methods=["POST"])
 def register_trade():
     data = request.get_json()
     if not data:
-        return jsonify({"error": "Sin datos"}), 400
+        return {"error": "Sin datos"}, 400
+
     trade = {
         "time": data.get("time", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        "symbol": data.get("symbol", ""),
-        "side": data.get("side", ""),
-        "qty": float(data.get("qty", 0)),
-        "price": float(data.get("price", 0)),
+        "strategy": data.get("strategy", "Desconocida"),
+        "type": data.get("type", ""),
+        "entry": float(data.get("entry", 0)),
+        "exit_price": float(data.get("exit", 0)),
         "profit": float(data.get("profit", 0)),
     }
-    alpaca_trades.append(trade)
-    return jsonify({"status": "ok", "total": len(alpaca_trades)})
+    trades.append(trade)
+
+    # Analizar y enviar alertas
+    alerts = analyze_trades(trades)
+    if alerts:
+        for alert in alerts:
+            send_telegram(alert)
+
+    return {"status": "ok", "total": len(trades)}
+
+@app.route("/stats", methods=["GET"])
+def stats():
+    if not trades:
+        return {"message": "Sin operaciones aun"}
+    
+    by_strategy = {}
+    for t in trades:
+        s = t['strategy']
+        if s not in by_strategy:
+            by_strategy[s] = {"wins": 0, "losses": 0, "profit": 0}
+        if t['profit'] > 0:
+            by_strategy[s]['wins'] += 1
+        else:
+            by_strategy[s]['losses'] += 1
+        by_strategy[s]['profit'] = round(by_strategy[s]['profit'] + t['profit'], 2)
+
+    return {
+        "total": len(trades),
+        "pnl_total": round(sum(t['profit'] for t in trades), 2),
+        "win_rate": round(sum(1 for t in trades if t['profit'] > 0) / len(trades) * 100, 1),
+        "por_estrategia": by_strategy
+    }
+
+@app.route("/adjust", methods=["POST"])
+def adjust():
+    """Aplica un ajuste al EA - pasa por el Verificador primero"""
+    data = request.get_json()
+    if not data or "type" not in data or "value" not in data:
+        return jsonify({"error": "Falta type o value"}), 400
+    current = get_current_params()
+    success, reason = verify_and_apply(data["type"], data["value"], current)
+    return jsonify({"status": "ok" if success else "rejected", "reason": reason})
+
+@app.route("/heartbeat", methods=["POST"])
+def heartbeat():
+    """Recibe heartbeat del EA cada 30 minutos"""
+    global last_heartbeat
+    last_heartbeat = datetime.now()
+    data = request.get_json() or {}
+    hour_et = data.get("hour_et", "?")
+    print(f"Heartbeat recibido - hora ET: {hour_et}")
+    return jsonify({"status": "ok", "time": str(last_heartbeat)})
+
+@app.route("/heartbeat_status", methods=["GET"])
+def heartbeat_status():
+    """Verifica si el EA sigue activo"""
+    import time
+    if last_heartbeat is None:
+        return jsonify({"status": "sin_datos", "message": "Nunca se recibio heartbeat"})
+    seconds_ago = (datetime.now() - last_heartbeat).total_seconds()
+    if seconds_ago > HEARTBEAT_TIMEOUT:
+        msg = f"[ALERTA] Bot posiblemente detenido - ultimo heartbeat hace {int(seconds_ago/60)} minutos"
+        send_telegram(msg)
+        return jsonify({"status": "alerta", "minutes_ago": int(seconds_ago/60)})
+    return jsonify({"status": "activo", "minutes_ago": int(seconds_ago/60)})
+
+@app.route("/verify", methods=["GET"])
+def verify():
+    """Verifica que todos los parámetros actuales sean seguros"""
+    current = get_current_params()
+    ok, issues = verify_all_params(current)
+    return jsonify({"status": "ok" if ok else "issues", "issues": issues, "params": current})
+
+@app.route("/params", methods=["GET"])
+def params():
+    """Ver parametros actuales del EA"""
+    p = get_current_params()
+    return jsonify(p)
+
+@app.route("/optimize", methods=["GET"])
+def optimize():
+    """Ejecuta el Agente Optimizador"""
+    if len(trades) < 5:
+        return jsonify({"message": "Necesitas al menos 5 operaciones"})
+    result = run_optimization(trades)
+    return jsonify(result)
+
+@app.route("/analyze_market", methods=["GET"])
+def analyze_market():
+    result = run_analysis(trades)
+    return jsonify(result)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
