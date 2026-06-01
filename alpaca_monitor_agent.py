@@ -1,6 +1,5 @@
 import requests
 import os
-import time
 from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
@@ -18,6 +17,7 @@ def send_telegram(message):
 def run_monitor():
     """Agente Monitor: obtiene estado del bot via webhook"""
     try:
+        import time
         response = None
         for intento in range(3):
             response = requests.get(f"{WEBHOOK_URL}/", timeout=15)
@@ -47,7 +47,6 @@ def run_monitor():
             report += "Sin posiciones abiertas\n"
 
         send_telegram(report)
-
         return {
             "balance": balance,
             "posiciones": posiciones,
@@ -56,7 +55,6 @@ def run_monitor():
             "trailing_stop_pct": ts_pct,
             "status": "ok"
         }
-
     except Exception as e:
         error_msg = f"[MONITOR ALPACA] Error: {str(e)}"
         send_telegram(error_msg)
