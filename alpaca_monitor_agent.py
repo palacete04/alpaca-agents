@@ -1,5 +1,6 @@
 import requests
 import os
+import time
 from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
@@ -17,16 +18,16 @@ def send_telegram(message):
 def run_monitor():
     """Agente Monitor: obtiene estado del bot via webhook"""
     try:
-        # Obtener estado general del webhook
-        import time
-for intento in range(3):
-    response = requests.get(f"{WEBHOOK_URL}/", timeout=15)
-    if response.status_code != 429:
-        break
-    time.sleep(5)
-        if response.status_code != 200:
-            raise Exception(f"Webhook error: {response.status_code}")
-        
+        response = None
+        for intento in range(3):
+            response = requests.get(f"{WEBHOOK_URL}/", timeout=15)
+            if response.status_code != 429:
+                break
+            time.sleep(5)
+
+        if response is None or response.status_code != 200:
+            raise Exception(f"Webhook error: {response.status_code if response else 'sin respuesta'}")
+
         data = response.json()
         balance    = data.get("balance", 0)
         posiciones = data.get("posiciones", {})
@@ -34,7 +35,6 @@ for intento in range(3):
         tp_pct     = data.get("take_profit_pct", 2.0)
         ts_pct     = data.get("trailing_stop_pct", 0.5)
 
-        # Armar reporte
         report = f"[MONITOR ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
         report += f"Balance: ${balance:,.2f}\n"
         report += f"Stop Loss: {sl_pct}% | Take Profit: {tp_pct}% | Trailing: {ts_pct}%\n\n"
