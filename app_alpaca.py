@@ -7,12 +7,14 @@ try:
     from alpaca_analyst_agent import run_analysis_alpaca
     from alpaca_optimizer_agent import run_optimization_alpaca
     from alpaca_verifier_agent import run_verification_alpaca
+from alpaca_scheduler import start_scheduler_alpaca
     print("Imports exitosos")
 except Exception as e:
     print(f"Error de import: {e}")
     raise
 
 app = Flask(__name__)
+start_scheduler_alpaca(lambda: alpaca_trades)
 
 ALPACA_PARAMS = {
     "stop_loss_pct": float(os.environ.get("STOP_LOSS_PCT", "1.0")),
