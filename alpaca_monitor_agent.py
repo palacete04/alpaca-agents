@@ -3,8 +3,9 @@ import os
 from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "8957492846:AAGophSxXOSZGT4Gd1cLTNOICzxpZIH5wEU")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6518133529")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://trading-webhook-zhra.onrender.com")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-5246245037")  # Grupo Bot Alpaca
+# WEBHOOK_URL ahora es el mismo servidor (webhook integrado en app_alpaca.py)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://alpaca-agents.onrender.com")
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -15,7 +16,7 @@ def send_telegram(message):
         print(f"Error Telegram: {e}")
 
 def run_monitor():
-    """Agente Monitor: obtiene estado del bot via webhook"""
+    """Agente Monitor: obtiene estado del bot"""
     try:
         import time
         response = None
@@ -30,14 +31,16 @@ def run_monitor():
 
         data = response.json()
         balance    = data.get("balance", 0)
+        equity     = data.get("equity", 0)
         posiciones = data.get("posiciones", {})
         sl_pct     = data.get("stop_loss_pct", 1.0)
         tp_pct     = data.get("take_profit_pct", 2.0)
         ts_pct     = data.get("trailing_stop_pct", 0.5)
 
-        report = f"[MONITOR ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+        report  = f"[MONITOR ALPACA] {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
         report += f"Balance: ${balance:,.2f}\n"
-        report += f"Stop Loss: {sl_pct}% | Take Profit: {tp_pct}% | Trailing: {ts_pct}%\n\n"
+        report += f"Equity:  ${equity:,.2f}\n"
+        report += f"SL: {sl_pct}% | TP: {tp_pct}% | Trailing: {ts_pct}%\n\n"
 
         if posiciones:
             report += "Posiciones abiertas:\n"
@@ -48,12 +51,13 @@ def run_monitor():
 
         send_telegram(report)
         return {
-            "balance": balance,
-            "posiciones": posiciones,
-            "stop_loss_pct": sl_pct,
-            "take_profit_pct": tp_pct,
-            "trailing_stop_pct": ts_pct,
-            "status": "ok"
+            "balance":          balance,
+            "equity":           equity,
+            "posiciones":       posiciones,
+            "stop_loss_pct":    sl_pct,
+            "take_profit_pct":  tp_pct,
+            "trailing_stop_pct":ts_pct,
+            "status":           "ok"
         }
     except Exception as e:
         error_msg = f"[MONITOR ALPACA] Error: {str(e)}"
